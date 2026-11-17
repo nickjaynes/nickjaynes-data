@@ -1,0 +1,76 @@
+name: Update Hagerty Bylines
+
+on:
+  schedule:
+    - cron: '30 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest bylines and write hagerty-bylines.json
+        run: |
+          python3 - << 'PY'
+          import urllib.request, xml.etree.ElementTree as ET, json, sys
+          from email.utils import parsedate_to_datetime
+
+          FEED = "https://www.hagerty.com/media/author/njaynes/feed/"
+
+          def category_from_url(url):
+              try:
+                  parts = [p for p in url.split("/media/", 1)[1].split("/") if p]
+                  slug = parts[0]
+              except Exception:
+                  return "Article"
+              return slug.replace("-", " ").title().replace(" And ", " & ")
+
+          req = urllib.request.Request(FEED, headers={
+              "User-Agent": "Mozilla/5.0 (compatible; nickjaynes-site/1.0)"
+          })
+          raw = urllib.request.urlopen(req, timeout=30).read()
+          root = ET.fromstring(raw)
+
+          items = []
+          for item in root.findall("./channel/item"):
+              title = (item.findtext("title") or "").strip()
+              link = (item.findtext("link") or "").strip()
+              pub = item.findtext("pubDate")
+              if not (title and link and pub):
+                  continue
+              d = parsedate_to_datetime(pub)
+              items.append({
+                  "title": title,
+                  "url": link,
+                  "date": d.strftime("%B %-d, %Y"),
+                  "category": category_from_url(link),
+              })
+
+          if not items:
+              print("No items parsed from feed - leaving existing file untouched.")
+              sys.exit(1)
+
+          items = items[:6]
+          with open("hagerty-bylines.json", "w") as f:
+              json.dump(items, f, indent=2)
+          print(f"Wrote {len(items)} bylines:")
+          for it in items:
+              print(" -", it["date"], "|", it["title"])
+          PY
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hagerty-bylines.json
+          if git diff --staged --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Update hagerty-bylines.json"
+            git push
+          fi
